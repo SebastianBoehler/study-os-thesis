@@ -1,5 +1,18 @@
 const TOKEN_KEY = "study-os-thesis:token";
 
+declare global {
+  interface Window {
+    __RUNTIME_CONFIG__?: {
+      API_BASE_URL?: string;
+    };
+  }
+}
+
+export function apiBaseUrl(): string {
+  if (typeof window === "undefined") return "";
+  return window.__RUNTIME_CONFIG__?.API_BASE_URL?.replace(/\/$/, "") ?? "";
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -62,7 +75,7 @@ export async function api<T = unknown>(path: string, opts: FetchOpts = {}): Prom
 
   let res: Response;
   try {
-    res = await fetch(path, request);
+    res = await fetch(`${apiBaseUrl()}${path}`, request);
   } catch (err) {
     // Network-level failure (backend down, no internet, DNS failure).
     if (err instanceof TypeError) {

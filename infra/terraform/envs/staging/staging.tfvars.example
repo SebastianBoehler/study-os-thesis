@@ -1,0 +1,18 @@
+project_id  = "your-gcp-project"
+region      = "europe-west3"
+environment = "staging"
+image_tag   = "latest"
+frontend_origin = "*"
+
+database_url_secret         = "study-os-thesis-staging-database-url"
+redis_url_secret            = "study-os-thesis-staging-redis-url"
+jwt_secret                  = "study-os-thesis-staging-jwt-secret"
+azure_openai_api_key_secret = "study-os-thesis-staging-azure-openai-api-key"
+deepseek_api_key_secret     = "study-os-thesis-staging-deepseek-api-key"
+
+llm_chat_provider  = "deepseek"
+llm_embed_provider = "azure"
+
+azure_openai_endpoint = "https://your-resource.openai.azure.com"
+azure_chat_deployment = "gpt-4o"
+azure_embed_deployment = "text-embedding-3-small"

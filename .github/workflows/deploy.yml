@@ -1,0 +1,128 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - prod
+      ref:
+        description: 'Git ref to deploy'
+        required: false
+        default: ''
+  workflow_run:
+    workflows:
+      - Code Quality
+    branches:
+      - main
+    types:
+      - completed
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  REGION: europe-west3
+  TERRAFORM_DIR: infra/terraform
+
+jobs:
+  deploy:
+    name: Deploy ${{ github.event_name == 'workflow_run' && 'staging' || inputs.environment }}
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    environment: ${{ github.event_name == 'workflow_run' && 'staging' || inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+
+      - name: Resolve deployment settings
+        id: settings
+        run: |
+          ENVIRONMENT="${{ github.event_name == 'workflow_run' && 'staging' || inputs.environment }}"
+          IMAGE_TAG="${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}"
+          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "project_id=${{ vars.GCP_PROJECT_ID }}" >> "$GITHUB_OUTPUT"
+          echo "repository=study-os-thesis-${ENVIRONMENT}-containers" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Terraform init
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="prefix=study-os-thesis/${{ steps.settings.outputs.environment }}"
+
+      - name: Ensure Artifact Registry exists
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        env:
+          TF_VAR_project_id: ${{ steps.settings.outputs.project_id }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_environment: ${{ steps.settings.outputs.environment }}
+          TF_VAR_image_tag: ${{ steps.settings.outputs.image_tag }}
+        run: terraform apply -auto-approve -target=google_artifact_registry_repository.app
+
+      - name: Build and push backend image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ steps.settings.outputs.project_id }}/${{ steps.settings.outputs.repository }}/backend:${{ steps.settings.outputs.image_tag }}"
+          docker build -f backend/Dockerfile -t "${IMAGE}" backend
+          docker push "${IMAGE}"
+
+      - name: Build and push worker image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ steps.settings.outputs.project_id }}/${{ steps.settings.outputs.repository }}/worker:${{ steps.settings.outputs.image_tag }}"
+          docker build -f backend/Dockerfile.worker -t "${IMAGE}" backend
+          docker push "${IMAGE}"
+
+      - name: Build and push frontend image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ steps.settings.outputs.project_id }}/${{ steps.settings.outputs.repository }}/frontend:${{ steps.settings.outputs.image_tag }}"
+          docker build -f frontend/Dockerfile -t "${IMAGE}" frontend
+          docker push "${IMAGE}"
+
+      - name: Terraform apply
+        working-directory: ${{ env.TERRAFORM_DIR }}
+        env:
+          TF_VAR_project_id: ${{ steps.settings.outputs.project_id }}
+          TF_VAR_region: ${{ env.REGION }}
+          TF_VAR_environment: ${{ steps.settings.outputs.environment }}
+          TF_VAR_image_tag: ${{ steps.settings.outputs.image_tag }}
+          TF_VAR_database_url_secret: ${{ vars.DATABASE_URL_SECRET }}
+          TF_VAR_redis_url_secret: ${{ vars.REDIS_URL_SECRET }}
+          TF_VAR_jwt_secret: ${{ vars.JWT_SECRET_NAME }}
+          TF_VAR_azure_openai_api_key_secret: ${{ vars.AZURE_OPENAI_API_KEY_SECRET }}
+          TF_VAR_deepseek_api_key_secret: ${{ vars.DEEPSEEK_API_KEY_SECRET }}
+          TF_VAR_azure_openai_endpoint: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          TF_VAR_azure_chat_deployment: ${{ vars.AZURE_CHAT_DEPLOYMENT }}
+          TF_VAR_azure_embed_deployment: ${{ vars.AZURE_EMBED_DEPLOYMENT }}
+          TF_VAR_frontend_origin: ${{ vars.FRONTEND_ORIGIN || '*' }}
+        run: terraform apply -auto-approve
+
+      - name: Run database migrations
+        run: |
+          gcloud run jobs execute "study-os-thesis-${{ steps.settings.outputs.environment }}-migrate" \
+            --region "${{ env.REGION }}" \
+            --wait

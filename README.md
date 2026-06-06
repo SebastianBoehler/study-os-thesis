@@ -236,6 +236,102 @@ configured.
 
 ---
 
+## Deployment
+
+The app is deployable with Docker, GCP Cloud Run, GCP Secret Manager, Terraform,
+and external managed data services. For the short staging/prod trial setup,
+PostgreSQL and Redis-compatible caching are expected to come from DigitalOcean
+Managed Databases so the GCP credit is spent mainly on Cloud Run.
+
+### Containers
+
+Build the production images locally:
+
+```bash
+docker build -f backend/Dockerfile -t study-os-thesis-backend backend
+docker build -f backend/Dockerfile.worker -t study-os-thesis-worker backend
+docker build -f frontend/Dockerfile -t study-os-thesis-frontend frontend
+```
+
+The frontend image serves the Vite build with nginx. At container startup it
+writes `/runtime-config.js` from `API_BASE_URL`, so the same image can be used
+for staging and prod.
+
+### Terraform
+
+Terraform lives in `infra/terraform`. It creates one environment at a time:
+
+- Artifact Registry repository
+- Secret Manager IAM bindings for runtime secrets created with `gcloud`
+- Cloud Run backend, worker, frontend, and Alembic migration job
+
+Use the examples in `infra/terraform/envs/staging` and
+`infra/terraform/envs/prod` as starting points.
+
+Create the runtime secrets in GCP Secret Manager before applying Terraform:
+
+```bash
+gcloud secrets create study-os-thesis-staging-database-url --replication-policy=automatic
+printf '%s' 'postgresql+asyncpg://<user>:<password>@<host>:<port>/<db>?ssl=require' \
+  | gcloud secrets versions add study-os-thesis-staging-database-url --data-file=-
+
+gcloud secrets create study-os-thesis-staging-redis-url --replication-policy=automatic
+printf '%s' 'rediss://:<password>@<host>:<port>/0' \
+  | gcloud secrets versions add study-os-thesis-staging-redis-url --data-file=-
+
+gcloud secrets create study-os-thesis-staging-jwt-secret --replication-policy=automatic
+python -c "import secrets; print(secrets.token_urlsafe(32))" \
+  | gcloud secrets versions add study-os-thesis-staging-jwt-secret --data-file=-
+
+gcloud secrets create study-os-thesis-staging-azure-openai-api-key --replication-policy=automatic
+printf '%s' '<azure-key-or-empty-placeholder>' \
+  | gcloud secrets versions add study-os-thesis-staging-azure-openai-api-key --data-file=-
+
+gcloud secrets create study-os-thesis-staging-deepseek-api-key --replication-policy=automatic
+printf '%s' '<deepseek-key-or-empty-placeholder>' \
+  | gcloud secrets versions add study-os-thesis-staging-deepseek-api-key --data-file=-
+```
+
+Repeat with the `prod` names from `infra/terraform/envs/prod/prod.tfvars.example`
+when you want a separate production environment.
+
+```bash
+cd infra/terraform
+terraform init -backend-config="bucket=<state-bucket>" -backend-config="prefix=study-os-thesis/staging"
+terraform apply -var-file=envs/staging/staging.tfvars
+```
+
+### GitHub Actions
+
+`.github/workflows/deploy.yml` supports:
+
+- manual deployment to `staging` or `prod` through `workflow_dispatch`
+- automatic deployment to `staging` after the `Code Quality` workflow succeeds
+  on `main`
+
+Configure these repository variables:
+
+| Variable | Description |
+|---|---|
+| `GCP_PROJECT_ID` | GCP project to deploy into |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | Workload Identity Federation provider |
+| `GCP_DEPLOY_SERVICE_ACCOUNT` | Deploy service account email |
+| `TF_STATE_BUCKET` | GCS bucket for Terraform state |
+| `DATABASE_URL_SECRET` | Optional override for the Secret Manager `DATABASE_URL` secret name |
+| `REDIS_URL_SECRET` | Optional override for the Secret Manager `REDIS_URL` secret name |
+| `JWT_SECRET_NAME` | Optional override for the Secret Manager `JWT_SECRET` secret name |
+| `AZURE_OPENAI_API_KEY_SECRET` | Optional override for the Secret Manager Azure API key secret name |
+| `DEEPSEEK_API_KEY_SECRET` | Optional override for the Secret Manager DeepSeek API key secret name |
+| `AZURE_OPENAI_ENDPOINT` | Optional Azure OpenAI endpoint |
+| `AZURE_CHAT_DEPLOYMENT` | Optional Azure chat deployment |
+| `AZURE_EMBED_DEPLOYMENT` | Optional Azure embedding deployment |
+| `FRONTEND_ORIGIN` | Frontend origin for backend CORS; use the custom domain when available |
+
+The deploy workflow builds and pushes all three images, applies Terraform, and
+then executes the Cloud Run migration job.
+
+---
+
 ## Project layout
 
 ```

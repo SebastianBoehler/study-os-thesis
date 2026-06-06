@@ -1,0 +1,18 @@
+project_id  = "your-gcp-project"
+region      = "europe-west3"
+environment = "prod"
+image_tag   = "latest"
+frontend_origin = "https://app.example.com"
+
+database_url_secret         = "study-os-thesis-prod-database-url"
+redis_url_secret            = "study-os-thesis-prod-redis-url"
+jwt_secret                  = "study-os-thesis-prod-jwt-secret"
+azure_openai_api_key_secret = "study-os-thesis-prod-azure-openai-api-key"
+deepseek_api_key_secret     = "study-os-thesis-prod-deepseek-api-key"
+
+llm_chat_provider  = "deepseek"
+llm_embed_provider = "azure"
+
+azure_openai_endpoint = "https://your-resource.openai.azure.com"
+azure_chat_deployment = "gpt-4o"
+azure_embed_deployment = "text-embedding-3-small"
